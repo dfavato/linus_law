@@ -1,0 +1,310 @@
+---
+title: "Statistical Analysis"
+output: html_notebook
+---
+
+```{r libraries, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(readxl)
+library(normwhn.test)
+library(lmtest)
+library(sandwich)
+```
+
+# Pilot Study
+```{r}
+pilot_data <- read_excel("Pilot Study/pilot_db.xlsx", 
+                        col_types = c("text", "numeric", "numeric", 
+                                      "numeric", "numeric", "numeric", 
+                                      "numeric", "text", "numeric")) %>% as_tibble()
+pilot_data
+```
+
+#### Table 2: Number of code smells by project
+```{r}
+pilot_data['has_codesmell'] <- (pilot_data$GodClass + pilot_data$LongMethod + pilot_data$ComplexMethod) > 0
+pilot_data %>%
+  select(project, GodClass, LongMethod, ComplexMethod, has_codesmell) %>%
+  group_by(project) %>% summarise_all(sum)
+```
+
+#### Table 3: Proportions of code smells per file
+```{r}
+
+mins <- pilot_data %>%
+  select(GodClass, LongMethod, ComplexMethod) %>%
+  summarise_all(min)
+
+maxs <- pilot_data %>%
+  select(GodClass, LongMethod, ComplexMethod) %>%
+  summarise_all(max)
+
+wo_gc <- nrow(pilot_data %>% filter(GodClass == 0)) / nrow(pilot_data) * 100
+wo_lm <- nrow(pilot_data %>% filter(LongMethod == 0)) / nrow(pilot_data) * 100
+wo_cm <- nrow(pilot_data %>% filter(ComplexMethod == 0)) / nrow(pilot_data) * 100
+w1_gc <- nrow(pilot_data %>% filter(GodClass == 1)) / nrow(pilot_data) * 100
+w1_lm <- nrow(pilot_data %>% filter(LongMethod == 1)) / nrow(pilot_data) * 100
+w1_cm <- nrow(pilot_data %>% filter(ComplexMethod == 1)) / nrow(pilot_data) * 100
+wm_gc <- nrow(pilot_data %>% filter(GodClass > 1)) / nrow(pilot_data) * 100
+wm_lm <- nrow(pilot_data %>% filter(LongMethod > 1)) / nrow(pilot_data) * 100
+wm_cm <- nrow(pilot_data %>% filter(ComplexMethod > 1)) / nrow(pilot_data) * 100
+
+tibble(
+  Label=c('Min', 'Max', 'Files w/o (%)', 'Files w. 1(%)', 'Files w. more'),
+  GodClass=c(min(pilot_data$GodClass), max(pilot_data$GodClass), wo_gc, w1_gc, wm_gc),
+  LongMethod=c(min(pilot_data$LongMethod), max(pilot_data$LongMethod), wo_lm, w1_lm, wm_lm),
+  ComplexMethod=c(min(pilot_data$ComplexMethod), max(pilot_data$ComplexMethod), wo_cm, w1_cm, wm_cm)
+)
+```
+
+```{r}
+ggplot(data=pilot_data, aes(Contributors, fill=has_codesmell)) +
+  geom_histogram(aes(y=..density..), alpha=0.5, position='identity', binwidth = 1) +
+  ylab("Density") +
+  xlab("Number of Contributors") +
+  theme_minimal() +
+  theme(legend.position = 'bottom') +
+  labs(fill = 'Has code smell') + scale_fill_discrete(labels = c("No", "Yes")) +
+  xlim(0, 15)
+```
+
+```{r}
+wilcox_test <- wilcox.test(
+  pilot_data %>% filter(has_codesmell == TRUE) %>% pull(Contributors),
+  pilot_data %>% filter(has_codesmell == FALSE) %>% pull(Contributors)
+)
+sprintf(
+  "The null hypothesis that the two distributions do not differ by a shift in the Contributors axis was rejected (p-value = %.2g).",
+  wilcox_test$p.value
+)
+
+contigency_table <- table(pilot_data$has_codesmell, pilot_data$Contributors >= 5)
+
+sprintf(
+  "This result means that files with at least 5 contributors are %.1f times more likely to have a programming flaw.",
+  (contigency_table[1]*contigency_table[4])/(contigency_table[2]*contigency_table[3])
+)
+```
+
+
+# Main Study
+Load Data
+```{r load data}
+library(readxl)
+data <- read_excel("Main study/data.xlsx", 
+    col_types = c("skip", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "text", "numeric")) %>% as_tibble()
+data
+```
+
+#### Table 4: Descriptive statistics for sampled projects
+```{r}
+generate_table_4 <- function(data) {
+  cols <- c('open_issues', 'forks', 'watchers', 'ncloc')
+
+  means <- data %>%
+    summarise_at(cols, ~mean(., na.rm = TRUE)) %>%
+    gather(cols, key='Variable', value='mean')
+  
+  medians <- data %>%
+    summarise_at(cols, ~median(., na.rm = TRUE)) %>%
+    gather(cols, key='Variable', value='median')
+  
+  sds <- data %>%
+    summarise_at(cols, ~sd(., na.rm = TRUE)) %>%
+    gather(cols, key='Variable', value='sd')
+  
+  mins <- data %>%
+    summarise_at(cols, ~min(., na.rm = TRUE)) %>%
+    gather(cols, key='Variable', value='min')
+  
+  maxs <- data %>%
+    summarise_at(cols, ~max(., na.rm = TRUE)) %>%
+    gather(cols, key='Variable', value='max')
+  
+  
+  return(
+    tibble(
+      Variables=means$Variable,
+      Mean=means$mean,
+      Median=medians$median,
+      SD=sds$sd,
+      Min=mins$min,
+      Max=maxs$max
+    ) 
+  )
+}
+
+generate_table_4(data)
+```
+
+#### Figure 3: Histogram of the number of forks and watchers, horizontal axis is in logarithmic scale (base 10). Vertical axis represents the density, in the sample, of projects at each range of forks and watchers.
+```{r}
+ggplot(data %>% drop_na(), aes(log10(forks))) +
+  geom_histogram(aes(y=..density..), bins=9, color='white') +
+  stat_function(
+    fun=dnorm,
+    args=list(mean=mean(log10(data$forks)), sd=sd(log10(data$forks)))
+  ) +
+  ylab("Density") +
+  xlab("log(forks)") +
+  theme_minimal()
+
+ggplot(data %>% drop_na(), aes(log10(watchers))) +
+  geom_histogram(aes(y=..density..), bins=9, color='white') +
+  stat_function(
+    fun=dnorm,
+    args=list(mean=mean(log10(data$watchers)), sd=sd(log10(data$watchers)))
+  ) +
+  ylab("Density") +
+  xlab("log(watchers)") +
+  theme_minimal()
+
+```
+
+
+#### Linear Regression for figure 5
+```{r, echo=FALSE}
+model1 <- lm(log(open_issues + 1) ~ log(watchers), data=data %>% drop_na())
+
+sink("log.txt")
+norm_test <- normality.test1(as.matrix(model1$residuals))
+sink()
+
+spearman <- cor.test(log(data$watchers), log(data$open_issues + 1), method="spearman")
+
+summary(model1)
+sprintf(
+  "On average, an increase of 1%% in the number o watchers is correlated to an increase of %.2f%% in the number of issues.",
+  model1$coefficients['log(watchers)']
+)
+sprintf(
+  "Doornik-Hansen test rejects the normality of the residuals of the regression (p-value = %.4f).",
+  norm_test
+)
+sprintf(
+  "The Spearman's rank correlation test ratifies the positive monotonic relation between the variable (rho = %.2f, p-value = %.2g).",
+  spearman$estimate, spearman$p.value
+)
+```
+
+#### Figure 5: Scatterplot of open issues and number of watchers on logarithmic scale on both axis.
+```{r}
+ggplot(data, aes(x=log(watchers), y=log(open_issues + 1))) +
+  geom_point() +
+  geom_abline(
+   intercept=model1$coefficients[1],
+   slope=model1$coefficients[2]
+  ) +
+  labs(x='ln(watchers)', y='ln(open_issues + 1)') +
+  theme_minimal()
+```
+
+
+#### Table 5: Number of forks by presence of bugs
+```{r}
+data['has_bugs'] <- (data$bug_blocker + data$bug_critical + data$bug_info + data$bug_major + data$bug_minor)>0
+data %>% select(forks, has_bugs) %>% group_by(has_bugs) %>%
+  summarise(Min=min(forks), Mean=mean(forks), Max=max(forks), SD=sd(forks), N.Obs.=n())
+```
+
+#### Figure 6: Boxplot of the distribution of forks (logarithmic scale) by the presence of bugs reported by the SonarQube. The horizontal lines in the boxplot represent 1st, 2nd and 3r quartiles. Vertical lines are the maximum and minimum values.
+```{r}
+ggplot(aes(y=log(forks), x=has_bugs), data=data %>% drop_na()) +
+    geom_boxplot() +
+    theme_minimal() +
+    labs(x='Has bugs', y='log(forks)')
+```
+
+#### Forks and 'bugs'
+```{r}
+model2 <- lm(log(forks) ~ has_bugs, data=data %>% drop_na())
+summary(model2)
+
+sprintf(
+  "The variable has_bugs was not significant (beta_1 = %.3f, p-value = %.4f)",
+  model2$coefficients[2],
+  summary(model2)$coefficients['has_bugsTRUE', 4]
+)
+
+# Regression diagnosis
+bp_test <- bptest(model2, studentize = FALSE)
+sink("log.txt")
+norm_test <- normality.test1(as.matrix(model2$residuals))
+sink()
+
+sprintf(
+  "The Doornik-Hansen normality test does not reject the null hypothesis of normality (p-value = %.4f)",
+  norm_test
+)
+
+sprintf(
+  "The Breush-Pagan test of homoscedasticity rejects the null hypothesis of homoscedasticity (p-value = %.4f)",
+  bp_test$p.value
+)
+
+wilcox_test <- wilcox.test(data %>% filter(has_bugs == TRUE) %>% pull(forks), data %>% filter(has_bugs == FALSE) %>% pull(forks))
+
+sprintf(
+  "The two sample Wilcox test of distribution shift does not reject the null hypothesis that both distributions have the same median (p-value = %.4f)",
+  wilcox_test$p.value
+)
+
+coeftest(model2, vcov = vcovHC(model2, type="HC0"))
+```
+
+#### Forks and 'code smells'
+#### Figure 7: Scatter plot code smells per thousand lines of code and number of forks (logarithmic scale base 10).
+```{r}
+data['code_smells_per_kloc'] <- (data$code_smell_blocker + data$code_smell_major + data$code_smell_critical)/data$ncloc * 1000
+model3 <- lm(code_smells_per_kloc ~log(forks), data=data %>% drop_na())
+
+ggplot(data %>% drop_na(), aes(x=log(forks), y=code_smells_per_kloc)) +
+    geom_point() +
+    theme_minimal() +
+    geom_abline(intercept=model3$coefficients[1], slope=model3$coefficients[2]) +
+    labs(x='ln(forks)', y='Code smells per thousand lines of code')
+```
+
+```{r}
+spearman <- cor.test(data$code_smells_per_kloc, log(data$forks), method="spearman")
+summary(model3)
+sprintf(
+  "The OLS estimates that an increase of 1%% in the number of forks is correlated to a %.2f%% decrease in the number of code smells per thousand lines of code.",
+  abs(model3$coefficients[2])
+)
+# Regression diagnosis
+bp_test <- bptest(model3, studentize = FALSE)
+sink("log.txt")
+norm_test <- normality.test1(as.matrix(model3$residuals))
+sink()
+
+sprintf(
+  "The Doornik-Hansen normality test rejects the null hypothesis of normality (p-value = %.2g)",
+  norm_test
+)
+
+sprintf(
+  "The Breush-Pagan test of homoscedasticity rejects the null hypothesis of homoscedasticity (p-value = %.2g)",
+  bp_test$p.value
+)
+
+sprintf(
+  "The heteroscedascity robust variant of the OLS estimates shows that forks is not significant (p-value = %.4f).",
+  coeftest(model3, vcov = vcovHC(model3, type="HC1"))['log(forks)', 4]
+)
+
+
+sprintf(
+  "The Spearman’s rank coefficient does not reject the hypothesis that there is no monotonic relation between number of forks and code smells per lines of code (rho = %.4f, p-value = %.4f).",
+  spearman$estimate, spearman$p.value
+)
+```

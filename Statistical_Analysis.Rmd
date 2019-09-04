@@ -11,6 +11,7 @@ library(readxl)
 library(normwhn.test)
 library(lmtest)
 library(sandwich)
+library(grid)
 ```
 
 # Pilot Study
@@ -93,15 +94,7 @@ sprintf(
 Load Data
 ```{r load data}
 library(readxl)
-data <- read_excel("Main study/data.xlsx", 
-    col_types = c("skip", "numeric", "numeric", 
-        "numeric", "numeric", "numeric", 
-        "numeric", "numeric", "numeric", 
-        "numeric", "numeric", "numeric", 
-        "numeric", "numeric", "numeric", 
-        "numeric", "numeric", "numeric", 
-        "numeric", "numeric", "numeric", 
-        "numeric", "numeric", "text", "numeric")) %>% as_tibble()
+data <- read_excel("Main study/data.xlsx") %>% as_tibble()
 data
 ```
 
@@ -212,15 +205,21 @@ ggplot(data, aes(x=log(watchers), y=log(open_issues + 1))) +
 #### Table 5: Number of forks by presence of bugs
 ```{r}
 data['has_bugs'] <- (data$bug_blocker + data$bug_critical + data$bug_info + data$bug_major + data$bug_minor)>0
-data %>% select(forks, has_bugs) %>% group_by(has_bugs) %>%
+data %>% drop_na() %>% select(forks, has_bugs) %>% group_by(has_bugs) %>%
   summarise(Min=min(forks), Mean=mean(forks), Max=max(forks), SD=sd(forks), N.Obs.=n())
 ```
 
 #### Figure 6: Boxplot of the distribution of forks (logarithmic scale) by the presence of bugs reported by the SonarQube. The horizontal lines in the boxplot represent 1st, 2nd and 3r quartiles. Vertical lines are the maximum and minimum values.
-```{r}
+```{r fig.width=4, fig.height=3.5}
 ggplot(aes(y=log(forks), x=has_bugs), data=data %>% drop_na()) +
-    geom_boxplot() +
+    geom_boxplot(width=0.2) +
+    stat_summary(fun.y=mean, geom="point", 
+               shape=3, size=3) +
     theme_minimal() +
+    theme(
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank()
+    ) +
     labs(x='Has bugs', y='log(forks)')
 ```
 
